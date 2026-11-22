@@ -1,0 +1,12 @@
+[package]
+name = "sigmaos-data-wrangling"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "SigmaOS component: data-wrangling"
+
+[dependencies]
+
+[[bin]]
+name = "sigmaos-data-wrangling"
+path = "src/main.rs"
