@@ -70,18 +70,22 @@ pub struct Pipeline {
 pub fn apply_step(records: &mut Vec<Value>, step: &Transform) -> Result<(), WrangleError> {
     match step {
         Transform::Filter { field, equals } => {
-            records.retain(|r| {
-                r.get(field).and_then(|v| v.as_str()) == Some(equals.as_str())
-            });
+            records.retain(|r| r.get(field).and_then(|v| v.as_str()) == Some(equals.as_str()));
         }
         Transform::FilterGte { field, value } => {
             records.retain(|r| {
-                r.get(field).and_then(|v| v.as_f64()).map(|x| x >= *value).unwrap_or(false)
+                r.get(field)
+                    .and_then(|v| v.as_f64())
+                    .map(|x| x >= *value)
+                    .unwrap_or(false)
             });
         }
         Transform::FilterLte { field, value } => {
             records.retain(|r| {
-                r.get(field).and_then(|v| v.as_f64()).map(|x| x <= *value).unwrap_or(false)
+                r.get(field)
+                    .and_then(|v| v.as_f64())
+                    .map(|x| x <= *value)
+                    .unwrap_or(false)
             });
         }
         Transform::Set { field, value } => {
@@ -140,14 +144,15 @@ pub fn apply_step(records: &mut Vec<Value>, step: &Transform) -> Result<(), Wran
         Transform::CountBy { field, out } => {
             let mut counts: BTreeMap<String, u64> = BTreeMap::new();
             for r in records.iter() {
-                let key = r.get(field).map(|v| v.to_string()).unwrap_or_else(|| "null".into());
+                let key = r
+                    .get(field)
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "null".into());
                 *counts.entry(key).or_default() += 1;
             }
             let new_records: Vec<Value> = counts
                 .into_iter()
-                .map(|(k, c)| {
-                    serde_json::json!({ field.clone(): k, out.clone(): c })
-                })
+                .map(|(k, c)| serde_json::json!({ field.clone(): k, out.clone(): c }))
                 .collect();
             *records = new_records;
         }
@@ -176,7 +181,9 @@ pub fn load_records(path: &Path) -> Result<Vec<Value>, WrangleError> {
                 Err(WrangleError::Pipeline("no records array found".into()))
             }
         }
-        _ => Err(WrangleError::Pipeline("input must be array or {records: []}".into())),
+        _ => Err(WrangleError::Pipeline(
+            "input must be array or {records: []}".into(),
+        )),
     }
 }
 

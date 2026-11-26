@@ -1,8 +1,10 @@
 //! CLI for sigmaos-data-wrangling.
 
 use clap::{Parser, Subcommand};
-use sigmaos_data_wrangling::{load_pipeline, load_records, run, save_pipeline, Pipeline, Transform};
 use serde_json::json;
+use sigmaos_data_wrangling::{
+    load_pipeline, load_records, run, save_pipeline, Pipeline, Transform,
+};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -42,7 +44,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let records = run(&p)?;
             println!("pipeline '{}' produced {} records", p.name, records.len());
         }
-        Commands::Transform { input, output, filter, limit, sort } => {
+        Commands::Transform {
+            input,
+            output,
+            filter,
+            limit,
+            sort,
+        } => {
             let mut steps = Vec::new();
             for f in filter {
                 if let Some((k, v)) = f.split_once('=') {
@@ -69,7 +77,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Show { file } => {
             let records = load_records(&file)?;
-            println!("{}", serde_json::to_string_pretty(&json!({"count": records.len(), "records": records}))?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({"count": records.len(), "records": records}))?
+            );
         }
         Commands::SaveTemplate { file } => {
             let p = Pipeline {
@@ -77,8 +88,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 input: PathBuf::from("input.json"),
                 output: PathBuf::from("output.json"),
                 steps: vec![
-                    Transform::Filter { field: "status".into(), equals: "active".into() },
-                    Transform::Sort { field: "created".into() },
+                    Transform::Filter {
+                        field: "status".into(),
+                        equals: "active".into(),
+                    },
+                    Transform::Sort {
+                        field: "created".into(),
+                    },
                     Transform::Limit { n: 100 },
                 ],
             };
