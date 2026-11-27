@@ -66,6 +66,16 @@ pub struct Pipeline {
     pub steps: Vec<Transform>,
 }
 
+/// Grouping key for a record field: strings use their raw value,
+/// other JSON values use their serialization, missing → "null".
+fn record_key(r: &Value, field: &str) -> String {
+    match r.get(field) {
+        Some(Value::String(s)) => s.clone(),
+        Some(v) => v.to_string(),
+        None => "null".into(),
+    }
+}
+
 /// Apply a transform to a record list.
 pub fn apply_step(records: &mut Vec<Value>, step: &Transform) -> Result<(), WrangleError> {
     match step {
@@ -136,19 +146,12 @@ pub fn apply_step(records: &mut Vec<Value>, step: &Transform) -> Result<(), Wran
         }
         Transform::Dedup { field } => {
             let mut seen = std::collections::BTreeSet::new();
-            records.retain(|r| {
-                let key = r.get(field).map(|v| v.to_string()).unwrap_or_default();
-                seen.insert(key)
-            });
+            records.retain(|r| seen.insert(record_key(r, field)));
         }
         Transform::CountBy { field, out } => {
             let mut counts: BTreeMap<String, u64> = BTreeMap::new();
             for r in records.iter() {
-                let key = r
-                    .get(field)
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "null".into());
-                *counts.entry(key).or_default() += 1;
+                *counts.entry(record_key(r, field)).or_default() += 1;
             }
             let new_records: Vec<Value> = counts
                 .into_iter()
@@ -217,4 +220,199 @@ pub fn load_pipeline(path: &Path) -> Result<Pipeline, WrangleError> {
 pub fn default_pipelines_dir() -> Option<PathBuf> {
     directories::ProjectDirs::from("org", "sigmaos", "sigmaos")
         .map(|p| p.config_dir().join("data-wrangling").join("pipelines"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn recs() -> Vec<Value> {
+        vec![
+            json!({"name": "a", "score": 10, "grp": "x"}),
+            json!({"name": "b", "score": 20, "grp": "y"}),
+            json!({"name": "c", "score": 30, "grp": "x"}),
+        ]
+    }
+
+    #[test]
+    fn filter_variants() {
+        let mut r = recs();
+        apply_step(
+            &mut r,
+            &Transform::Filter {
+                field: "grp".into(),
+                equals: "x".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(r.len(), 2);
+        apply_step(
+            &mut r,
+            &Transform::FilterGte {
+                field: "score".into(),
+                value: 15.0,
+            },
+        )
+        .unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0]["name"], "c");
+        apply_step(
+            &mut r,
+            &Transform::FilterLte {
+                field: "score".into(),
+                value: 5.0,
+            },
+        )
+        .unwrap();
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn field_ops() {
+        let mut r = recs();
+        apply_step(
+            &mut r,
+            &Transform::Set {
+                field: "tag".into(),
+                value: json!("t"),
+            },
+        )
+        .unwrap();
+        assert_eq!(r[0]["tag"], "t");
+        apply_step(
+            &mut r,
+            &Transform::Copy {
+                from: "name".into(),
+                to: "nm".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(r[1]["nm"], "b");
+        apply_step(
+            &mut r,
+            &Transform::Rename {
+                from: "grp".into(),
+                to: "group".into(),
+            },
+        )
+        .unwrap();
+        assert!(r[0].get("grp").is_none());
+        assert_eq!(r[0]["group"], "x");
+        apply_step(
+            &mut r,
+            &Transform::Drop {
+                field: "score".into(),
+            },
+        )
+        .unwrap();
+        assert!(r.iter().all(|v| v.get("score").is_none()));
+    }
+
+    #[test]
+    fn sort_limit_dedup() {
+        let mut r = recs();
+        apply_step(
+            &mut r,
+            &Transform::Sort {
+                field: "score".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(r[0]["name"], "a");
+        assert_eq!(r[2]["name"], "c");
+        apply_step(&mut r, &Transform::Limit { n: 2 }).unwrap();
+        assert_eq!(r.len(), 2);
+        let mut d = vec![json!({"k": 1}), json!({"k": 1}), json!({"k": 2})];
+        apply_step(&mut d, &Transform::Dedup { field: "k".into() }).unwrap();
+        assert_eq!(d.len(), 2);
+    }
+
+    #[test]
+    fn aggregates() {
+        let mut r = recs();
+        apply_step(
+            &mut r,
+            &Transform::CountBy {
+                field: "grp".into(),
+                out: "n".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(r.len(), 2);
+        let x = r.iter().find(|v| v["grp"] == "x").unwrap();
+        assert_eq!(x["n"], 2);
+        let mut s = recs();
+        apply_step(
+            &mut s,
+            &Transform::Sum {
+                field: "score".into(),
+                out: "total".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0]["total"], 60.0);
+    }
+
+    #[test]
+    fn load_records_variants() {
+        let dir = std::env::temp_dir().join(format!("wrangle-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let arr = dir.join("a.json");
+        std::fs::write(&arr, r#"[{"x":1},{"x":2}]"#).unwrap();
+        assert_eq!(load_records(&arr).unwrap().len(), 2);
+        let obj = dir.join("o.json");
+        std::fs::write(&obj, r#"{"records":[{"x":9}]}"#).unwrap();
+        assert_eq!(load_records(&obj).unwrap()[0]["x"], 9);
+        let bad = dir.join("b.json");
+        std::fs::write(&bad, r#"{"nope":[]}"#).unwrap();
+        assert!(load_records(&bad).is_err());
+        assert!(load_records(&dir.join("missing.json")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_pipeline_end_to_end() {
+        let dir = std::env::temp_dir().join(format!("wrangle-run-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let inp = dir.join("in.json");
+        let outp = dir.join("out.json");
+        std::fs::write(&inp, r#"[{"k":"a","v":1},{"k":"b","v":2},{"k":"a","v":3}]"#).unwrap();
+        let p = Pipeline {
+            name: "t".into(),
+            input: inp,
+            output: outp.clone(),
+            steps: vec![
+                Transform::Filter {
+                    field: "k".into(),
+                    equals: "a".into(),
+                },
+                Transform::Sum {
+                    field: "v".into(),
+                    out: "total".into(),
+                },
+            ],
+        };
+        let res = run(&p).unwrap();
+        assert_eq!(res[0]["total"], 4.0);
+        assert!(outp.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pipeline_serde_roundtrip() {
+        let p = Pipeline {
+            name: "n".into(),
+            input: PathBuf::from("/in.json"),
+            output: PathBuf::from("/out.json"),
+            steps: vec![Transform::Limit { n: 5 }],
+        };
+        let j = serde_json::to_string(&p).unwrap();
+        let back: Pipeline = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.name, "n");
+        assert_eq!(back.steps.len(), 1);
+        // tagged enum: op field present
+        assert!(j.contains("\"op\":\"limit\""));
+    }
 }
